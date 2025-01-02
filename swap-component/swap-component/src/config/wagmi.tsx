@@ -6,14 +6,14 @@ import {
   midnightTheme,
 } from "@rainbow-me/rainbowkit";
 import { WagmiProvider } from "wagmi";
-import { bscTestnet } from "wagmi/chains";
+import { baseSepolia, base } from "wagmi/chains";
 import { QueryClientProvider, QueryClient } from "@tanstack/react-query";
 const queryClient = new QueryClient();
 
 export const config = getDefaultConfig({
-  appName: "BNB Launchpad",
+  appName: "Skynet XBT",
   projectId: "YOUR_PROJECT_ID",
-  chains: [bscTestnet],
+  chains: [baseSepolia, base],
 });
 //0xD80DC42a1c0AD05CCF2f95Ee7831B4225b356e7D
 //TokenFactory v1

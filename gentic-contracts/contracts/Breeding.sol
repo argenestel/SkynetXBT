@@ -3,7 +3,8 @@ pragma solidity ^0.8.0;
 
 import "./GeneticAgent.sol";
 import "./GuardianNode.sol";
-import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+import "./TokenFactory.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 contract Breeding is ReentrancyGuard {
     struct BreedingProposal {
@@ -14,6 +15,10 @@ contract Breeding is ReentrancyGuard {
         uint256 approvals;
         bool executed;
         mapping(address => bool) hasVoted;
+        string name;
+        string symbol;
+        string imageUrl;
+        string description;
     }
 
     struct BreedingRules {
@@ -21,33 +26,47 @@ contract Breeding is ReentrancyGuard {
         uint256 maxGenerationGap;
         uint256 minMcap;
         uint256 cooldownPeriod;
+        uint256 requiredApprovals;
     }
 
     GeneticAgent public geneticAgent;
     GuardianNode public guardianNode;
+    TokenFactory public tokenFactory;
     BreedingRules public rules;
     
     mapping(uint256 => BreedingProposal) public proposals;
     uint256 public proposalCounter;
     
+    event BreedingProposed(uint256 indexed proposalId, string parent1Id, string parent2Id);
+    event GuardianVoted(uint256 indexed proposalId, address indexed guardian);
     event BreedingSuccessful(string parent1Id, string parent2Id, string childId);
     event TraitInherited(string childId, bytes32 traitKey, uint256 value);
 
-    constructor(address _geneticAgent, address _guardianNode) {
+    constructor(
+        address _geneticAgent,
+        address _guardianNode,
+        address _tokenFactory
+    ) {
         geneticAgent = GeneticAgent(_geneticAgent);
         guardianNode = GuardianNode(_guardianNode);
+        tokenFactory = TokenFactory(_tokenFactory);
         
         rules = BreedingRules({
             minParentFitness: 1000,
             maxGenerationGap: 2,
             minMcap: 50000,
-            cooldownPeriod: 7 days
+            cooldownPeriod: 7 days,
+            requiredApprovals: 6 // 60% of guardians must approve
         });
     }
 
     function submitBreedingProposal(
         string memory parent1Id,
-        string memory parent2Id
+        string memory parent2Id,
+        string memory name,
+        string memory symbol,
+        string memory imageUrl,
+        string memory description
     ) external payable nonReentrant {
         require(msg.value >= geneticAgent.CREATION_COST(), "Insufficient breeding cost");
         require(_validateBreedingPair(parent1Id, parent2Id), "Invalid breeding pair");
@@ -58,6 +77,56 @@ contract Breeding is ReentrancyGuard {
         proposal.parent1Id = parent1Id;
         proposal.parent2Id = parent2Id;
         proposal.timestamp = block.timestamp;
+        proposal.name = name;
+        proposal.symbol = symbol;
+        proposal.imageUrl = imageUrl;
+        proposal.description = description;
+
+        emit BreedingProposed(proposalId, parent1Id, parent2Id);
+    }
+
+    function voteOnProposal(uint256 proposalId) external {
+        require(guardianNode.hasRole(guardianNode.GUARDIAN_ROLE(), msg.sender), "Not a guardian");
+        
+        BreedingProposal storage proposal = proposals[proposalId];
+        require(!proposal.executed, "Proposal already executed");
+        require(!proposal.hasVoted[msg.sender], "Already voted");
+        require(block.timestamp <= proposal.timestamp + 1 days, "Voting period ended");
+
+        proposal.hasVoted[msg.sender] = true;
+        proposal.approvals++;
+
+        emit GuardianVoted(proposalId, msg.sender);
+
+        // If enough approvals, execute breeding
+        if (proposal.approvals >= rules.requiredApprovals) {
+            _executeBreeding(proposalId);
+        }
+    }
+
+    function _executeBreeding(uint256 proposalId) internal {
+        BreedingProposal storage proposal = proposals[proposalId];
+        require(!proposal.executed, "Already executed");
+        
+        // Get parent token addresses
+        (address parent1Token,) = geneticAgent.getAgentDetails(proposal.parent1Id);
+        (address parent2Token,) = geneticAgent.getAgentDetails(proposal.parent2Id);
+
+        // Complete breeding through TokenFactory
+        address childToken = tokenFactory.completeBreeding(
+            parent1Token,
+            parent2Token,
+            proposal.name,
+            proposal.symbol,
+            proposal.imageUrl,
+            proposal.description
+        );
+
+        // Inherit traits
+        _inheritTraits(proposal.parent1Id, proposal.parent2Id, childToken);
+
+        proposal.executed = true;
+        emit BreedingSuccessful(proposal.parent1Id, proposal.parent2Id, proposal.name);
     }
 
     function _validateBreedingPair(
@@ -81,9 +150,9 @@ contract Breeding is ReentrancyGuard {
     }
 
     function _inheritTraits(
-        string memory childId,
         string memory parent1Id,
-        string memory parent2Id
+        string memory parent2Id,
+        address childToken
     ) internal {
         bytes32[] memory traitKeys = geneticAgent.getTraitKeys(parent1Id);
         
@@ -104,7 +173,9 @@ contract Breeding is ReentrancyGuard {
                 }
             }
             
-            emit TraitInherited(childId, traitKeys[i], inheritedValue);
+            // Set trait in child token
+            geneticAgent.setTrait(childToken, traitKeys[i], inheritedValue);
+            emit TraitInherited(Token(childToken).name(), traitKeys[i], inheritedValue);
         }
     }
 
